@@ -1,0 +1,52 @@
+name: One-time cleanup Actions artifacts
+
+on:
+  push:
+    branches:
+      - maintenance/cleanup-actions-artifacts-20261013
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for other branch workflows and delete artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = context.ref.replace('refs/heads/', '');
+
+            for (let attempt = 0; attempt < 30; attempt++) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, branch, per_page: 100
+              });
+              const active = data.workflow_runs.filter(run =>
+                run.id !== context.runId &&
+                ['queued', 'in_progress', 'waiting', 'requested', 'pending'].includes(run.status)
+              );
+              if (active.length === 0) break;
+              core.info(`Waiting for ${active.length} other workflow run(s) on ${branch}...`);
+              await new Promise(resolve => setTimeout(resolve, 20000));
+            }
+
+            let deleted = 0;
+            for (;;) {
+              const { data } = await github.rest.actions.listArtifactsForRepo({
+                owner, repo, per_page: 100
+              });
+              if (!data.artifacts.length) break;
+              for (const artifact of data.artifacts) {
+                await github.rest.actions.deleteArtifact({
+                  owner, repo, artifact_id: artifact.id
+                });
+                deleted++;
+              }
+            }
+            core.notice(`Deleted ${deleted} Actions artifact(s) from ${owner}/${repo}.`);
